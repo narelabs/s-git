@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import unittest
 
-from sgit.ast_parser import parse_file
-from sgit.commit_gen import generate_commit_message
-from sgit.diff_engine import compute_delta
+from sgit.core.commit_gen import generate_commit_message
+from sgit.core.diff_engine import compute_delta
 from sgit.models import FileSnapshot
+from sgit.parsers.ast_parser import parse_file
 
 
 class TestGenerateCommitMessage(unittest.TestCase):

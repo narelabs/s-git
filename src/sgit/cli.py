@@ -7,18 +7,18 @@ from pathlib import Path
 
 import click
 
-from sgit.ast_parser import parse_file
-from sgit.commit_gen import generate_commit_message
-from sgit.diff_engine import compute_delta, format_deltas
-from sgit.merge_engine import format_merge_result, merge_snapshots
+from sgit.core.commit_gen import generate_commit_message
+from sgit.core.diff_engine import compute_delta, format_deltas
+from sgit.core.merge_engine import format_merge_result, merge_snapshots
+from sgit.core.storage import Repository, init_repo
 from sgit.models import FileSnapshot, SemanticDelta
-from sgit.storage import Repository, init_repo
+from sgit.parsers.registry import is_supported, parse_any_file
 
 
 @click.group()
 @click.version_option(package_name="s-git")
 def main() -> None:
-    """s-git: Semantic Git — version control that tracks meaning, not text."""
+    """s-git: Semantic Git -- version control that tracks meaning, not text."""
 
 
 @main.command()
@@ -50,16 +50,16 @@ def add(files: tuple[str, ...]) -> None:
     added_count = 0
     for file_arg in files:
         if file_arg == ".":
-            for py_file in repo.list_tracked_files():
-                repo.add_file(py_file)
+            for src_file in repo.list_tracked_files():
+                repo.add_file(src_file)
                 added_count += 1
         else:
             if Path(file_arg).is_absolute():
                 rel = str(Path(file_arg).relative_to(repo.root))
             else:
                 rel = file_arg
-            if Path(rel).suffix != ".py":
-                click.echo(f"Skipping non-Python file: {rel}")
+            if not is_supported(rel):
+                click.echo(f"Skipping unsupported file: {rel}")
                 continue
             try:
                 repo.add_file(rel)
@@ -71,8 +71,14 @@ def add(files: tuple[str, ...]) -> None:
 
 
 @main.command()
-@click.option("-m", "--message", default=None, help="Override auto-generated commit message.")
-def commit(message: str | None) -> None:
+@click.option(
+    "-m",
+    "--message",
+    default=None,
+    help="Override auto-generated commit message.",
+)
+@click.option("--no-hooks", is_flag=True, help="Skip semantic hooks.")
+def commit(message: str | None, no_hooks: bool) -> None:
     """Create a semantic commit (auto-generates message from AST diff)."""
     try:
         repo = Repository()
@@ -89,10 +95,28 @@ def commit(message: str | None) -> None:
     for rel_path in index:
         full_path = repo.root / rel_path
         if full_path.exists():
-            current_snapshots[rel_path] = parse_file(str(full_path))
+            current_snapshots[rel_path] = parse_any_file(str(full_path))
+
+    deltas = _compute_deltas_vs_head(repo, current_snapshots)
+
+    if not no_hooks:
+        from sgit.plugins.hooks import (
+            format_hook_result,
+            load_hooks_config,
+            run_hooks,
+        )
+
+        hooks_config = load_hooks_config(repo.root)
+        if hooks_config:
+            hook_result = run_hooks(deltas, hooks_config)
+            if not hook_result.ok:
+                click.echo(format_hook_result(hook_result), err=True)
+                click.echo("Use --no-hooks to skip.", err=True)
+                sys.exit(1)
+            if hook_result.violations:
+                click.echo(format_hook_result(hook_result))
 
     if message is None:
-        deltas = _compute_deltas_vs_head(repo, current_snapshots)
         message = generate_commit_message(deltas)
 
     commit_obj = repo.create_commit(message, current_snapshots)
@@ -104,7 +128,13 @@ def commit(message: str | None) -> None:
 
 @main.command()
 @click.argument("ref", default=None, required=False)
-def diff(ref: str | None) -> None:
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output as JSON for AI agents.",
+)
+def diff(ref: str | None, as_json: bool) -> None:
     """Show semantic diff (working tree vs HEAD, or between commits)."""
     try:
         repo = Repository()
@@ -115,37 +145,51 @@ def diff(ref: str | None) -> None:
     if ref is not None:
         parts = ref.split("..")
         if len(parts) == 2:
-            _diff_commits(repo, parts[0], parts[1])
+            deltas = _get_deltas_commits(repo, parts[0], parts[1])
         else:
-            _diff_ref_vs_working(repo, ref)
+            deltas = _get_deltas_ref_vs_working(repo, ref)
     else:
-        _diff_head_vs_working(repo)
+        deltas = _get_deltas_head_vs_working(repo)
 
+    active = [d for d in deltas if d.has_changes]
 
-def _diff_head_vs_working(repo: Repository) -> None:
-    """Diff working directory against HEAD."""
-    py_files = repo.list_tracked_files()
-    if not py_files:
-        click.echo("No Python files found.")
+    if not active:
+        if as_json:
+            click.echo("[]")
+        else:
+            click.echo("No semantic changes detected.")
         return
 
+    if as_json:
+        from sgit.plugins.json_output import deltas_to_json
+
+        click.echo(deltas_to_json(active))
+    else:
+        click.echo(format_deltas(active))
+
+
+def _get_deltas_head_vs_working(
+    repo: Repository,
+) -> list[SemanticDelta]:
+    """Compute deltas: working directory vs HEAD."""
+    src_files = repo.list_tracked_files()
+    if not src_files:
+        return []
+
     current_snapshots: dict[str, FileSnapshot] = {}
-    for f in py_files:
+    for f in src_files:
         full = repo.root / f
         if full.exists():
-            current_snapshots[f] = parse_file(str(full))
+            current_snapshots[f] = parse_any_file(str(full))
 
-    deltas = _compute_deltas_vs_head(repo, current_snapshots)
-    active_deltas = [d for d in deltas if d.has_changes]
-
-    if not active_deltas:
-        click.echo("No semantic changes detected.")
-    else:
-        click.echo(format_deltas(active_deltas))
+    return _compute_deltas_vs_head(repo, current_snapshots)
 
 
-def _diff_ref_vs_working(repo: Repository, ref: str) -> None:
-    """Diff a specific commit against working directory."""
+def _get_deltas_ref_vs_working(
+    repo: Repository,
+    ref: str,
+) -> list[SemanticDelta]:
+    """Compute deltas: a specific commit vs working directory."""
     commit_obj = repo.get_commit(ref)
     if commit_obj is None:
         click.echo(f"Commit not found: {ref}", err=True)
@@ -153,24 +197,22 @@ def _diff_ref_vs_working(repo: Repository, ref: str) -> None:
 
     old_snapshots = repo.get_commit_snapshots(commit_obj)
 
-    py_files = repo.list_tracked_files()
+    src_files = repo.list_tracked_files()
     new_snapshots: dict[str, FileSnapshot] = {}
-    for f in py_files:
+    for f in src_files:
         full = repo.root / f
         if full.exists():
-            new_snapshots[f] = parse_file(str(full))
+            new_snapshots[f] = parse_any_file(str(full))
 
-    deltas = _compute_deltas_between(old_snapshots, new_snapshots)
-    active = [d for d in deltas if d.has_changes]
-
-    if not active:
-        click.echo("No semantic changes detected.")
-    else:
-        click.echo(format_deltas(active))
+    return _compute_deltas_between(old_snapshots, new_snapshots)
 
 
-def _diff_commits(repo: Repository, ref_a: str, ref_b: str) -> None:
-    """Diff between two commits."""
+def _get_deltas_commits(
+    repo: Repository,
+    ref_a: str,
+    ref_b: str,
+) -> list[SemanticDelta]:
+    """Compute deltas between two commits."""
     commit_a = repo.get_commit(ref_a)
     commit_b = repo.get_commit(ref_b)
     if commit_a is None:
@@ -182,19 +224,18 @@ def _diff_commits(repo: Repository, ref_a: str, ref_b: str) -> None:
 
     old_snaps = repo.get_commit_snapshots(commit_a)
     new_snaps = repo.get_commit_snapshots(commit_b)
-
-    deltas = _compute_deltas_between(old_snaps, new_snaps)
-    active = [d for d in deltas if d.has_changes]
-
-    if not active:
-        click.echo("No semantic changes detected.")
-    else:
-        click.echo(format_deltas(active))
+    return _compute_deltas_between(old_snaps, new_snaps)
 
 
 @main.command()
 @click.option("-n", "--count", default=10, help="Number of commits to show.")
-def log(count: int) -> None:
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output as JSON for AI agents.",
+)
+def log(count: int, as_json: bool) -> None:
     """Show commit history with semantic messages."""
     try:
         repo = Repository()
@@ -204,21 +245,35 @@ def log(count: int) -> None:
 
     commits = repo.log(max_count=count)
     if not commits:
-        click.echo("No commits yet.")
+        if as_json:
+            click.echo("[]")
+        else:
+            click.echo("No commits yet.")
         return
 
-    for c in commits:
-        title = c.message.split("\n")[0]
-        files = len(c.snapshots)
-        click.echo(f"commit {c.commit_id} ({c.branch})")
-        click.echo(f"  Date:  {c.timestamp}")
-        click.echo(f"  Files: {files}")
-        click.echo(f"  {title}")
-        click.echo()
+    if as_json:
+        from sgit.plugins.json_output import commits_to_json
+
+        click.echo(commits_to_json(commits))
+    else:
+        for c in commits:
+            title = c.message.split("\n")[0]
+            files = len(c.snapshots)
+            click.echo(f"commit {c.commit_id} ({c.branch})")
+            click.echo(f"  Date:  {c.timestamp}")
+            click.echo(f"  Files: {files}")
+            click.echo(f"  {title}")
+            click.echo()
 
 
 @main.command()
-def status() -> None:
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Output as JSON for AI agents.",
+)
+def status(as_json: bool) -> None:
     """Show repository status."""
     try:
         repo = Repository()
@@ -228,31 +283,38 @@ def status() -> None:
 
     branch = repo.current_branch
     head = repo.head_commit_id()
+    index = repo.read_index()
+    src_files = repo.list_tracked_files()
+
+    untracked: list[str] = []
+    if head and src_files:
+        head_commit = repo.get_commit(head)
+        if head_commit:
+            committed_files = set(head_commit.snapshots.keys())
+            untracked = [f for f in src_files if f not in committed_files and f not in index]
+    elif src_files and not index:
+        untracked = src_files
+
+    if as_json:
+        from sgit.plugins.json_output import status_to_json
+
+        click.echo(status_to_json(branch, head, index, untracked))
+        return
+
     click.echo(f"On branch {branch}")
     if head:
         click.echo(f"HEAD: {head[:8]}")
     else:
         click.echo("No commits yet")
 
-    index = repo.read_index()
     if index:
         click.echo(f"\nStaged files ({len(index)}):")
         for path in sorted(index):
             click.echo(f"  {path}")
 
-    py_files = repo.list_tracked_files()
-    if head and py_files:
-        head_commit = repo.get_commit(head)
-        if head_commit:
-            committed_files = set(head_commit.snapshots.keys())
-            untracked = [f for f in py_files if f not in committed_files and f not in index]
-            if untracked:
-                click.echo(f"\nUntracked Python files ({len(untracked)}):")
-                for f in untracked:
-                    click.echo(f"  {f}")
-    elif py_files and not index:
-        click.echo(f"\nUntracked Python files ({len(py_files)}):")
-        for f in py_files:
+    if untracked:
+        click.echo(f"\nUntracked files ({len(untracked)}):")
+        for f in untracked:
             click.echo(f"  {f}")
 
 
@@ -312,7 +374,10 @@ def merge(branch_name: str) -> None:
     our_commit_id = repo.head_commit_id()
 
     if not their_commit:
-        click.echo(f"Could not load commit for branch '{branch_name}'.", err=True)
+        click.echo(
+            f"Could not load commit for branch '{branch_name}'.",
+            err=True,
+        )
         sys.exit(1)
 
     if not our_commit_id:
@@ -324,7 +389,11 @@ def merge(branch_name: str) -> None:
         click.echo("Could not load HEAD commit.", err=True)
         sys.exit(1)
 
-    base_commit_id = _find_common_ancestor(repo, our_commit_id, their_commit_id)
+    base_commit_id = _find_common_ancestor(
+        repo,
+        our_commit_id,
+        their_commit_id,
+    )
 
     our_snaps = repo.get_commit_snapshots(our_commit)
     their_snaps = repo.get_commit_snapshots(their_commit)
@@ -364,10 +433,196 @@ def merge(branch_name: str) -> None:
             f"\nMerge has {total_conflicts} conflict(s) and "
             f"{total_resolved} auto-resolved change(s)."
         )
-        click.echo("Resolve conflicts manually and run 'sgit commit'.")
+        click.echo("Resolve conflicts manually or use 'sgit resolve'.")
 
 
-def _find_common_ancestor(repo: Repository, commit_a: str, commit_b: str) -> str | None:
+@main.command()
+@click.argument("file_path", required=False)
+@click.option(
+    "--model",
+    default="default",
+    help="LLM model to use for AI resolution.",
+)
+def resolve(file_path: str | None, model: str) -> None:
+    """AI-powered conflict resolution.
+
+    Sends conflicting code to an LLM (via sgit-llm on PATH) to produce
+    a merged result.  Falls back to heuristic merge if no LLM is available.
+    """
+    from sgit.plugins.resolve import format_resolve_result, resolve_with_cli_llm
+
+    if file_path is None:
+        click.echo("Usage: sgit resolve <file>")
+        click.echo("Sends conflicting versions to an AI model for intelligent resolution.")
+        click.echo("\nRequires 'sgit-llm' on PATH (or set SGIT_LLM_COMMAND).")
+        return
+
+    p = Path(file_path)
+    if not p.exists():
+        click.echo(f"File not found: {file_path}", err=True)
+        sys.exit(1)
+
+    source = p.read_text(encoding="utf-8")
+    result = resolve_with_cli_llm(
+        file_path=file_path,
+        base_code="",
+        our_code=source,
+        their_code=source,
+        conflicts=["Manual resolve request"],
+        model=model,
+    )
+
+    click.echo(format_resolve_result(result))
+
+
+@main.command()
+@click.argument("action", type=click.Choice(["init", "check", "list"]))
+def hooks(action: str) -> None:
+    r"""Manage semantic hooks (pre-commit AST rules).
+
+    \b
+    Actions:
+      init   Create default hooks configuration
+      check  Run hooks against staged changes
+      list   Show configured rules
+    """
+    from sgit.plugins.hooks import (
+        default_hooks_config,
+        format_hook_result,
+        load_hooks_config,
+        run_hooks,
+        save_hooks_config,
+    )
+
+    try:
+        repo = Repository()
+    except FileNotFoundError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    if action == "init":
+        config = default_hooks_config()
+        save_hooks_config(repo.root, config)
+        click.echo("Created default semantic hooks in .sgit/hooks.json")
+        click.echo("Rules:")
+        for name, cfg in config["rules"].items():
+            state = "enabled" if cfg.get("enabled") else "disabled"
+            click.echo(f"  {name}: {state}")
+
+    elif action == "list":
+        config = load_hooks_config(repo.root)
+        if not config:
+            click.echo("No hooks configured. Run 'sgit hooks init' first.")
+            return
+        click.echo("Semantic hook rules:")
+        for name, cfg in config.get("rules", {}).items():
+            state = "enabled" if cfg.get("enabled") else "disabled"
+            click.echo(f"  {name}: {state}")
+
+    elif action == "check":
+        config = load_hooks_config(repo.root)
+        if not config:
+            click.echo("No hooks configured. Run 'sgit hooks init' first.")
+            return
+
+        src_files = repo.list_tracked_files()
+        current: dict[str, FileSnapshot] = {}
+        for f in src_files:
+            full = repo.root / f
+            if full.exists():
+                current[f] = parse_any_file(str(full))
+
+        deltas = _compute_deltas_vs_head(repo, current)
+        result = run_hooks(deltas, config)
+        click.echo(format_hook_result(result))
+        if not result.ok:
+            sys.exit(1)
+
+
+@main.command(name="git-install")
+def git_install() -> None:
+    """Install git aliases and subcommands for seamless integration.
+
+    After running this, you can use:
+      git sdiff    -> sgit diff
+      git slog     -> sgit log
+      git smerge   -> sgit merge
+      git sstatus  -> sgit status
+      git scommit  -> sgit commit
+    """
+    from sgit.plugins.git_plugin import (
+        install_git_aliases,
+        install_git_subcommands,
+    )
+
+    aliases = install_git_aliases()
+    if aliases:
+        click.echo(f"Installed git aliases: {', '.join(aliases)}")
+    else:
+        click.echo("Failed to install git aliases.")
+
+    scripts = install_git_subcommands()
+    if scripts:
+        click.echo(f"Installed git subcommands: {', '.join(scripts)}")
+    else:
+        click.echo("Failed to install git subcommands.")
+
+    click.echo("\nYou can now use:")
+    click.echo("  git sdiff          -- semantic diff")
+    click.echo("  git slog           -- semantic log")
+    click.echo("  git smerge <br>    -- semantic merge")
+    click.echo("  git sstatus        -- semantic status")
+    click.echo("  git scommit        -- semantic commit")
+
+
+@main.command()
+def languages() -> None:
+    """List supported programming languages."""
+    from sgit.parsers.tree_sitter_parser import (
+        EXTENSION_MAP,
+        list_supported_languages,
+    )
+
+    click.echo("Supported languages:")
+    for lang in list_supported_languages():
+        exts = [ext for ext, lid in EXTENSION_MAP.items() if lid == lang]
+        click.echo(f"  {lang:14s}  {', '.join(exts)}")
+    click.echo(f"\n{len(list_supported_languages())} languages supported via tree-sitter")
+
+
+@main.command()
+@click.argument("action", type=click.Choice(["stats", "clear"]))
+def cache(action: str) -> None:
+    r"""Manage the incremental parsing cache (DSM).
+
+    \b
+    Actions:
+      stats  Show cache hit/miss statistics
+      clear  Clear the entire cache
+    """
+    from sgit.parsers.cache import ParseCache
+
+    try:
+        repo = Repository()
+    except FileNotFoundError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    pc = ParseCache(repo.sgit / "cache")
+    if action == "stats":
+        s = pc.stats()
+        click.echo(f"Cached files: {s['cached_files']}")
+        click.echo(f"Hits: {s['hits']}, Misses: {s['misses']}")
+    elif action == "clear":
+        pc.clear()
+        click.echo("Cache cleared.")
+
+
+def _find_common_ancestor(
+    repo: Repository,
+    commit_a: str,
+    commit_b: str,
+) -> str | None:
     """Find common ancestor commit (simple linear walk)."""
     ancestors_a: set[str] = set()
     current = commit_a
@@ -387,7 +642,8 @@ def _find_common_ancestor(repo: Repository, commit_a: str, commit_b: str) -> str
 
 
 def _compute_deltas_vs_head(
-    repo: Repository, current_snapshots: dict[str, FileSnapshot]
+    repo: Repository,
+    current_snapshots: dict[str, FileSnapshot],
 ) -> list[SemanticDelta]:
     """Compute semantic deltas between HEAD and current snapshots."""
     head_id = repo.head_commit_id()

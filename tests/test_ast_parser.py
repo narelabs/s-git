@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from sgit.ast_parser import flatten_nodes, parse_file
+from sgit.parsers.ast_parser import flatten_nodes, parse_file
 
 SAMPLE_CODE = '''\
 import os

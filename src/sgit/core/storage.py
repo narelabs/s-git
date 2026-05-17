@@ -191,12 +191,23 @@ class Repository:
         return commits
 
     def list_tracked_files(self) -> list[str]:
-        """List all .py files in the repo (excluding .sgit)."""
+        """List all supported source files in the repo (excluding .sgit)."""
+        from sgit.parsers.registry import is_supported
+
         result: list[str] = []
         for dirpath, dirnames, filenames in os.walk(self.root):
-            dirnames[:] = [d for d in dirnames if d != SGIT_DIR and not d.startswith(".")]
+            dirnames[:] = [
+                d
+                for d in dirnames
+                if d != SGIT_DIR
+                and not d.startswith(".")
+                and d != "node_modules"
+                and d != "__pycache__"
+                and d != "target"
+                and d != "vendor"
+            ]
             for fname in filenames:
-                if fname.endswith(".py"):
+                if is_supported(fname):
                     full = Path(dirpath) / fname
                     rel = str(full.relative_to(self.root))
                     result.append(rel)

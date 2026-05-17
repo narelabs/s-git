@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from difflib import SequenceMatcher
 
-from sgit.ast_parser import flatten_nodes
 from sgit.models import FileSnapshot, SemanticDelta, SemanticNode
+from sgit.parsers.ast_parser import flatten_nodes
 
 RENAME_SIMILARITY_THRESHOLD = 0.6
 
@@ -42,10 +42,7 @@ def compute_delta(old: FileSnapshot, new: FileSnapshot) -> SemanticDelta:
     for name in matched:
         old_node = old_nodes[name]
         new_node = new_nodes[name]
-        if (
-            old_node.body_hash != new_node.body_hash
-            or old_node.signature != new_node.signature
-        ):
+        if old_node.body_hash != new_node.body_hash or old_node.signature != new_node.signature:
             delta.modified.append((old_node, new_node))
 
     used_old: set[str] = set()
@@ -76,9 +73,7 @@ def compute_delta(old: FileSnapshot, new: FileSnapshot) -> SemanticDelta:
             if old_node.name != new_node.name:
                 delta.renamed.append((old_name, best_new_name, new_node))
             if old_parent != new_parent:
-                delta.moved.append(
-                    (new_node, old_parent or "(module)", new_parent or "(module)")
-                )
+                delta.moved.append((new_node, old_parent or "(module)", new_parent or "(module)"))
             if old_node.body_hash != new_node.body_hash:
                 delta.modified.append((old_node, new_node))
 
@@ -114,9 +109,7 @@ def format_delta(delta: SemanticDelta) -> str:
     for old_node, new_node in delta.modified:
         lines.append(f"    ~ Modified {new_node.kind} '{new_node.qualified_name}'")
         if old_node.signature != new_node.signature:
-            lines.append(
-                f"      signature changed: {old_node.signature} -> {new_node.signature}"
-            )
+            lines.append(f"      signature changed: {old_node.signature} -> {new_node.signature}")
 
     for old_name, new_name, node in delta.renamed:
         lines.append(f"    > Renamed '{old_name}' -> '{new_name}'")

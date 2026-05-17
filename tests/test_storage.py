@@ -6,8 +6,8 @@ import os
 import tempfile
 import unittest
 
-from sgit.ast_parser import parse_file
-from sgit.storage import Repository, init_repo
+from sgit.core.storage import Repository, init_repo
+from sgit.parsers.ast_parser import parse_file
 
 SAMPLE_CODE = """\
 def greet(name: str) -> str:

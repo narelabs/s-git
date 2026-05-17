@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from sgit.ast_parser import flatten_nodes
 from sgit.models import FileSnapshot, SemanticNode
+from sgit.parsers.ast_parser import flatten_nodes
 
 
 @dataclass

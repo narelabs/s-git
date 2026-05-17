@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import unittest
 
-from sgit.ast_parser import parse_file
-from sgit.merge_engine import format_merge_result, merge_snapshots
+from sgit.core.merge_engine import format_merge_result, merge_snapshots
 from sgit.models import FileSnapshot
+from sgit.parsers.ast_parser import parse_file
 
 BASE_CODE = """\
 class Service:

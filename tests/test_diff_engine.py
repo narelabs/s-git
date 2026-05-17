@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import unittest
 
-from sgit.ast_parser import parse_file
-from sgit.diff_engine import compute_delta, format_delta
+from sgit.core.diff_engine import compute_delta, format_delta
+from sgit.parsers.ast_parser import parse_file
 
 CODE_V1 = """\
 class Service:
