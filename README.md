@@ -149,7 +149,7 @@ If you use `s-git` in your development pipeline, research, or organizational env
 
 ```bibtex
 @software{vladov_sgit_2026,
-  author       = {Vladov, Danil},
+  author       = {Danil Vladov},
   title        = {s-git: High-Performance AST-Based Semantic Version Control CLI},
   institution  = {NARE Labs},
   year         = {2026},
