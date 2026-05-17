@@ -3,7 +3,16 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![NARE Labs](https://img.shields.io/badge/Organization-NARE%20Labs-blue.svg)](https://github.com/narelabs)
 
-![s-git demo](video/video.mp4)
+<!-- 
+💡 TO ENABLE INLINE VIDEO PLAYBACK ON GITHUB:
+1. Open this README.md on github.com and click 'Edit' (pencil icon).
+2. Drag and drop your 'video/video.mp4' file directly into the editor.
+3. GitHub will generate a URL like 'https://github.com/user-attachments/assets/...'
+4. Paste that URL into the src attribute of the <video> tag below:
+-->
+<div align="center">
+  <video src="https://github.com/narelabs/s-git/raw/main/video/video.mp4" width="100%" autoplay loop muted playsinline controls></video>
+</div>
 
 > **Line-based diffing is a 50-year-old paradigm. It is time for version control to understand the structure of code, not just the characters on a line.**
 
