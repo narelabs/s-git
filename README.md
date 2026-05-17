@@ -3,6 +3,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![NARE Labs](https://img.shields.io/badge/Organization-NARE%20Labs-blue.svg)](https://github.com/narelabs)
 
+<div align="center">
+  <video src="video/video.mp4" width="100%" autoplay loop muted playsinline></video>
+</div>
+
 > **Line-based diffing is a 50-year-old paradigm. It is time for version control to understand the structure of code, not just the characters on a line.**
 
 **s-git** (Semantic Git) is a next-generation semantic version control CLI tool that tracks the **meaning and AST (Abstract Syntax Tree) mutations** of your codebase, rather than line-by-line text edits. 
